@@ -43,7 +43,7 @@ LEAGUE_COLOR_MAP = {
 @st.cache_data(ttl=60*15)
 def get_data(league_key):
     file_name = LEAGUE_FILE_MAP.get(league_key, LEAGUE_FILE_MAP['J1'])
-    file_path = f"{file_name}"
+    file_path = f"data/{file_name}"
     try:
         # ローディングインジケータを表示 (Streamlit Cloudで役立つ)
         with st.spinner(f'{league_key}データをロード中...'):
