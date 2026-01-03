@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+plotly
+altair
+matplotlib
+seaborn
+xlsxwriter
+mplsoccer
+vega_datasets
