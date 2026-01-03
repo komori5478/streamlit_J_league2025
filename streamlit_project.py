@@ -29,9 +29,9 @@ def to_excel(df: pd.DataFrame):
 
 # --- 1. データと変数定義 (グローバルスコープ) ---
 LEAGUE_FILE_MAP = {
-    'J1': 'data/2025_J1_physical_data.csv',
-    'J2': 'data/2025_J2_physical_data.csv',
-    'J3': 'data/2025_J3_physical_data.csv',
+    'J1': '2025_J1_physical_data.csv',
+    'J2': '2025_J2_physical_data.csv',
+    'J3': '2025_J3_physical_data.csv',
 }
 
 # リーグごとの指定色 (HOME画面の散布図用)
@@ -120,7 +120,7 @@ TEAM_COLORS = {
     'Giravanz Kitakyushu':"#E8BD00",'Tegevajaro Miyazaki FC':"#F6E066",'Kagoshima United FC':"#19315F",'FC Ryūkyū':"#AA131B",
 }
 
-available_vars = ['Distance','Running Distance','M/min','HSR Distance','Sprint Count','HI Distance','HI Count',
+available_vars = ['Distance','Running Distance','HSR Distance','Sprint Count','HI Distance','HI Count',
                   'Distance TIP','Running Distance TIP','HSR Distance TIP','HSR Count TIP',
                   'Sprint Distance TIP','Sprint Count TIP','Distance OTIP','Running Distance OTIP','HSR Distance OTIP','HSR Count OTIP',
                   'Sprint Distance OTIP','Sprint Count OTIP'] # TIP/OTIP指標を追加
