@@ -29,9 +29,9 @@ def to_excel(df: pd.DataFrame):
 
 # --- 1. データと変数定義 (グローバルスコープ) ---
 LEAGUE_FILE_MAP = {
-    'J1': '2025_J1_physical_data.csv',
-    'J2': '2025_J2_physical_data.csv',
-    'J3': '2025_J3_physical_data.csv',
+    'J1': 'data/2025_J1_physical_data.csv',
+    'J2': 'data/2025_J2_physical_data.csv',
+    'J3': 'data/2025_J3_physical_data.csv',
 }
 
 # リーグごとの指定色 (HOME画面の散布図用)
