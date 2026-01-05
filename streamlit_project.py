@@ -78,19 +78,33 @@ def get_all_league_data():
     all_dfs = [get_data(lk) for lk in LEAGUE_FILE_MAP.keys()]
     return pd.concat([d for d in all_dfs if not d.empty], ignore_index=True)
 
-# --- 3. 共通描画関数 (修正ロジック反映) ---
+# --- 3. 集計ロジック関数 (チーム単位の集計に固定) ---
 
-def apply_aggregation(df, method, vars):
-    """指定された方法でデータを集計するロジック"""
+def apply_aggregation(df, method, target_var, all_vars):
+    working_df = df.copy()
+
+    # Sprint等の項目で0を省く処理
+    if 'Sprint' in target_var or 'HI' in target_var:
+        working_df = working_df[working_df[target_var] > 0]
+
+    # --- 重要：常に「1試合あたりのチーム全員の合計」を基準にする ---
+    match_total_df = working_df.groupby(['Team', 'Match ID'])[all_vars].sum().reset_index()
+
+    if match_total_df.empty:
+        return pd.DataFrame()
+
     if method == 'Total':
-        return df.groupby('Team')[vars].sum().reset_index()
+        return match_total_df.groupby('Team')[all_vars].sum().reset_index()
     elif method == 'Average':
-        return df.groupby('Team')[vars].mean().reset_index()
+        return match_total_df.groupby('Team')[all_vars].mean().reset_index()
     elif method == 'Max':
-        return df.groupby('Team')[vars].max().reset_index()
+        return match_total_df.groupby('Team')[all_vars].max().reset_index()
     elif method == 'Min':
-        return df.groupby('Team')[vars].min().reset_index()
+        return match_total_df.groupby('Team')[all_vars].min().reset_index()
+    
     return pd.DataFrame()
+
+# --- 4. 各コンポーネント ---
 
 def render_custom_ranking(df, league_name, team_colors, available_vars):
     st.markdown("### 🏆 カスタムランキング作成")
@@ -101,7 +115,12 @@ def render_custom_ranking(df, league_name, team_colors, available_vars):
     method = col1.selectbox('集計方法', RANKING_METHODS, key=f"meth_{league_name}")
     var = col2.selectbox('評価指標', available_vars, key=f"var_{league_name}")
 
-    rank_df = apply_aggregation(df, method, available_vars)
+    rank_df = apply_aggregation(df, method, var, available_vars)
+    if rank_df.empty:
+        st.warning("有効なデータが見つかりません。")
+        return
+
+    # ソート順の設定 (Minの場合は昇順、それ以外は降順)
     sort_asc = (method == 'Min')
     plot_df = rank_df.sort_values(by=[var], ascending=sort_asc).reset_index(drop=True)
     plot_df = plot_df[::-1]
@@ -116,7 +135,13 @@ def render_custom_ranking(df, league_name, team_colors, available_vars):
         is_f = (t_name == team)
         c = focal_color if is_f else '#4A2E19'
         val = plot_df[var].iloc[i]
-        txt = f"{round(val/1000, 2)} km" if var == 'Distance' and method == 'Total' else f"{round(val,2)}"
+        
+        # 単位変換
+        if 'Distance' in var:
+            txt = f"{round(val/1000, 2)} km"
+        else:
+            txt = f"{round(val,1)}"
+            
         ax.annotate(f"{nrows-i}  {t_name}", xy=(0.1, i + .5), va='center', color=c, weight='bold' if is_f else 'regular')
         ax.annotate(txt, xy=(2.5, i + .5), va='center', color=c, weight='bold' if is_f else 'regular')
 
@@ -133,28 +158,33 @@ def render_league_dashboard(df, league_name, team_colors, available_vars):
     with tabs[0]:
         c1, c2 = st.columns(2)
         method = c1.selectbox('集計方法', RANKING_METHODS, key=f'am_{league_name}')
-        opts = [v.replace('Distance', 'Distance (km)') if v == 'Distance' and method == 'Total' else v for v in available_vars]
+        opts = [v.replace('Distance', 'Distance (km)') if 'Distance' in v and method == 'Total' else v for v in available_vars]
         sel_v = c2.selectbox('指標', opts, key=f'av_{league_name}')
         actual_v = sel_v.replace(' (km)', '')
 
-        stats = apply_aggregation(df, method, available_vars)
-        stats['val'] = stats[actual_v] / 1000 if sel_v == 'Distance (km)' else stats[actual_v]
-
-        sort_asc = (method == 'Min')
-        chart = alt.Chart(stats).mark_bar().encode(
-            y=alt.Y('Team:N', sort='x' if sort_asc else '-x', title='チーム'),
-            x=alt.X('val:Q', title=f'{method} {sel_v}'),
-            color=alt.Color('Team:N', scale=alt.Scale(domain=list(filt_colors.keys()), range=list(filt_colors.values()))),
-            tooltip=['Team', alt.Tooltip('val', format='.2f')]
-        ).properties(height=600)
-        st.altair_chart(chart, use_container_width=True)
+        stats = apply_aggregation(df, method, actual_v, available_vars)
+        if stats.empty:
+            st.warning("表示できるデータがありません。")
+        else:
+            stats['val'] = stats[actual_v] / 1000 if ' (km)' in sel_v else stats[actual_v]
+            sort_asc = (method == 'Min')
+            
+            chart = alt.Chart(stats).mark_bar().encode(
+                y=alt.Y('Team:N', sort='x' if sort_asc else '-x', title='チーム'),
+                x=alt.X('val:Q', title=f'{method} {sel_v}'),
+                color=alt.Color('Team:N', scale=alt.Scale(domain=list(filt_colors.keys()), range=list(filt_colors.values()))),
+                tooltip=['Team', alt.Tooltip('val', format='.2f')]
+            ).properties(height=600)
+            st.altair_chart(chart, use_container_width=True)
 
     with tabs[1]: render_custom_ranking(df, league_name, team_colors, available_vars)
     with tabs[2]: render_trend_analysis(df, league_name, team_colors, available_vars)
 
 def render_scatter_plot(df, vars, colors, l_colors):
     st.markdown("### 📊 J.League 全体分析：散布図")
-    team_avg = df.groupby(['Team', 'League'])[vars].mean().reset_index()
+    # 散布図も1試合あたりのチーム合計のシーズン平均を表示
+    team_match_totals = df.groupby(['Team', 'League', 'Match ID'])[vars].sum().reset_index()
+    team_avg = team_match_totals.groupby(['Team', 'League'])[vars].mean().reset_index()
     c1, c2 = st.columns(2)
     fig = px.scatter(team_avg, x=c1.selectbox('X軸', vars, index=1), y=c2.selectbox('Y軸', vars, index=2), color='League', color_discrete_map=l_colors, hover_data=['Team'], height=600)
     st.plotly_chart(fig, use_container_width=True)
@@ -165,13 +195,14 @@ def render_trend_analysis(df, league_name, team_colors, available_vars):
     c1, c2 = st.columns(2)
     sel_t = c1.selectbox('チーム', all_teams, key=f'tt_{league_name}')
     sel_v = c2.selectbox('項目', available_vars, key=f'tv_{league_name}')
-    team_data = df[df['Team'] == sel_t].groupby(['Matchday', 'Match ID'])[sel_v].mean().reset_index()
+    # 試合ごとの合計値の推移
+    team_data = df[df['Team'] == sel_t].groupby(['Matchday', 'Match ID'])[sel_v].sum().reset_index()
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=team_data['Matchday'], y=team_data[sel_v], mode='lines+markers', name='自チーム', line=dict(color=team_colors.get(sel_t, '#000'))))
+    fig.add_trace(go.Scatter(x=team_data['Matchday'], y=team_data[sel_v], mode='lines+markers', name='チーム1試合合計', line=dict(color=team_colors.get(sel_t, '#000'))))
     fig.update_layout(xaxis_title='節', yaxis_title='値', hovermode="x unified", height=500)
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 4. メイン ---
+# --- 5. メインロジック実行 ---
 with st.sidebar:
     selected = st.selectbox('menu', ['HOME', 'J1', 'J2', 'J3'])
 
