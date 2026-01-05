@@ -5,103 +5,87 @@ import altair as alt
 # --- 1. 設定 ---
 st.set_page_config(layout="wide", page_title="J.League Physical Dashboard")
 
-LEAGUE_FILE_MAP = {
-    'J1': '2025_J1_physical_data.csv', 
-    'J2': '2025_J2_physical_data.csv', 
-    'J3': '2025_J3_physical_data.csv'
-}
+LEAGUE_FILE_MAP = {'J1': '2025_J1_physical_data.csv', 'J2': '2025_J2_physical_data.csv', 'J3': '2025_J3_physical_data.csv'}
+PHYSICAL_VARS = ['Distance','Running Distance','HSR Distance','Sprint Count','HI Distance','HI Count']
 
-physical_vars = [
-    'Distance','Running Distance','HSR Distance','Sprint Count','HI Distance','HI Count',
-    'Distance TIP','Running Distance TIP','HSR Distance TIP','HSR Count TIP',
-    'Sprint Distance TIP','Sprint Count TIP','Distance OTIP','Running Distance OTIP',
-    'HSR Distance OTIP','HSR Count OTIP','Sprint Distance OTIP','Sprint Count OTIP'
-]
-
-# --- 2. チーム×節ごとの合計データ作成 ---
-
+# --- 2. データの自動変換エンジン ---
 @st.cache_data
-def get_match_day_summary(league_key):
+def get_match_summaries(league_key):
     try:
         raw_df = pd.read_csv(f"data/{LEAGUE_FILE_MAP[league_key]}")
         
-        # 【重要】Team と Match ID (またはDate) を組み合わせて「その試合」を特定
-        # その試合に紐づく全選手の数値を合計(sum)し、「1試合＝1行」のデータに変換
-        # これで個人の数値（2km）は消え、チームの数値（110km）に置き換わる
-        match_summary = raw_df.groupby(['Team', 'Match ID'])[physical_vars].sum().reset_index()
+        # ステップA: 「1節のデータを合計して、1節=合計値にする」
+        # Match IDとTeamで括り、その試合の全選手を合計。
+        # これで、生データ(選手単位)から、新たな「1試合1行のチームデータ」が生成されます。
+        match_summary = raw_df.groupby(['Team', 'Match ID'])[PHYSICAL_VARS].sum().reset_index()
         
-        # 節番号（第1節、第2節...）を分かりやすく付与
+        # 節番号を見やすく追加
         match_summary = match_summary.sort_values(['Team', 'Match ID'])
-        match_summary['Match_Count'] = match_summary.groupby('Team').cumcount() + 1
+        match_summary['Match_No'] = match_summary.groupby('Team').cumcount() + 1
         
         return match_summary
     except Exception as e:
-        st.error(f"データ処理エラー: {e}")
+        st.error(f"Error: {e}")
         return pd.DataFrame()
 
-# --- 3. メインUI ---
-
+# --- 3. メイン画面 ---
 selected = st.sidebar.selectbox('リーグ選択', ['J1', 'J2', 'J3'])
-df_team_matches = get_match_day_summary(selected)
+df_matches = get_match_summaries(selected) # ここでもう「38個の合計値リスト」になっている
 
-if not df_team_matches.empty:
-    st.title(f"🏆 {selected} チーム別ランキング")
-    st.write("各節の**『チーム全員の合計値』**を算出し、そのリストから最大・最小を抽出しています。")
-
+if not df_matches.empty:
+    st.title(f"🏆 {selected} チーム分析")
+    
     col1, col2 = st.columns(2)
     with col1:
-        method = st.selectbox('集計方法 (全試合のリストから選出)', ['Max', 'Min', 'Average', 'Total'])
+        method = st.selectbox('集計方法', ['Max', 'Min', 'Average'])
     with col2:
-        target_var = st.selectbox('指標', physical_vars)
+        target_var = st.selectbox('指標', PHYSICAL_VARS)
 
-    # --- 4. 38試合のリストから MIN/MAX を抽出 ---
-
-    # Sprint等の0（未計測）を除外
-    working_df = df_team_matches[df_team_matches[target_var] > 0].copy()
+    # ステップB: 「38個出した中からMAX/MINを出す」
+    # 0の試合（計測ミス等）を排除してから抽出
+    working_df = df_matches[df_matches[target_var] > 0].copy()
 
     if method == 'Max':
-        res = working_df.groupby('Team')[target_var].max().reset_index()
+        rank_df = working_df.groupby('Team')[target_var].max().reset_index()
     elif method == 'Min':
-        res = working_df.groupby('Team')[target_var].min().reset_index()
-    elif method == 'Average':
-        res = working_df.groupby('Team')[target_var].mean().reset_index()
-    else: # Total
-        res = working_df.groupby('Team')[target_var].sum().reset_index()
-
-    # 単位変換 (Distanceはkmへ)
-    if 'Distance' in target_var:
-        res[target_var] = res[target_var] / 1000
-        unit = "km"
+        rank_df = working_df.groupby('Team')[target_var].min().reset_index()
     else:
-        unit = "回/m"
+        rank_df = working_df.groupby('Team')[target_var].mean().reset_index()
 
-    # ソート (Minなら昇順)
+    # km変換
+    if 'Distance' in target_var:
+        rank_df[target_var] = rank_df[target_var] / 1000
+        y_title = f"{method} {target_var} (km)"
+    else:
+        y_title = f"{method} {target_var}"
+
+    # ソート (Minなら昇順、それ以外は降順)
     is_asc = (method == 'Min')
-    res = res.sort_values(by=target_var, ascending=is_asc)
+    rank_df = rank_df.sort_values(by=target_var, ascending=is_asc)
 
-    # --- 5. グラフ表示 ---
-    chart = alt.Chart(res).mark_bar().encode(
+    # --- 4. グラフ表示 ---
+    chart = alt.Chart(rank_df).mark_bar().encode(
         y=alt.Y('Team:N', sort='x' if is_asc else '-x', title='チーム'),
-        x=alt.X(f'{target_var}:Q', title=f"{method} {target_var} ({unit})"),
+        x=alt.X(f'{target_var}:Q', title=y_title),
         color=alt.Color('Team:N', legend=None),
         tooltip=['Team', alt.Tooltip(target_var, format='.2f')]
-    ).properties(height=550)
-
+    ).properties(height=600)
+    
     st.altair_chart(chart, use_container_width=True)
 
-    # --- 6. 算出プロセスの「見える化」 ---
+    # --- 5. プロセスの完全可視化 (ここを見れば納得できます) ---
     st.markdown("---")
-    st.subheader("🔍 計算プロセスの確認（1試合ごとの合計リスト）")
-    check_team = st.selectbox("チームを選択して数値の内訳を確認", sorted(df_team_matches['Team'].unique()))
+    st.subheader("📝 計算プロセスの透明化")
+    st.write("「1節ごとの合計」を算出し、そのリスト（最大38試合分）から選んでいる証拠です。")
     
-    # そのチームの全試合の「合計値」をリスト表示
-    team_list = df_team_matches[df_team_matches['Team'] == check_team].copy()
+    check_team = st.selectbox("内訳を確認するチーム", sorted(df_matches['Team'].unique()))
+    team_list = df_matches[df_matches['Team'] == check_team].copy()
+    
     if 'Distance' in target_var:
         team_list[target_var] = team_list[target_var] / 1000
-    
-    st.write(f"**{check_team} の各節のチーム合計数値 ({unit}):**")
-    st.write(f"以下の数値（全{len(team_list)}試合分）の中から、最も大きい/小さい値が上のグラフに反映されています。")
-    st.dataframe(team_list[['Match_Count', 'Match ID', target_var]].rename(columns={'Match_Count': '節'}))
+
+    st.write(f"**{check_team} の各試合合計値リスト:**")
+    st.dataframe(team_list[['Match_No', 'Match ID', target_var]].rename(columns={target_var: f'チーム合計 {target_var}'}))
 
 else:
     st.error("データが読み込めませんでした。")
