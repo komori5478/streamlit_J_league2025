@@ -11,24 +11,7 @@ LEAGUE_FILE_MAP = {
     'J3': '2025_J3_physical_data.csv'
 }
 
-# チームカラー（分析時に色が固定されるよう設定）
-TEAM_COLORS = {
-    'Kashima Antlers': '#B71940','Kashiwa Reysol':"#FFF000",'Urawa Red Diamonds': '#E6002D',
-    'FC Tokyo': "#3E4C8D",'Tokyo Verdy':"#006931",'FC Machida Zelvia':"#0056A5",
-    'Kawasaki Frontale': "#319FDA",'Yokohama F. Marinos': "#014099",'Yokohama FC':"#4BC1FE",'Shonan Bellmare':"#9EFF26",
-    'Albirex Niigata':"#FE641E",'Shimizu S-Pulse':"#FF8901",'Nagoya Grampus': "#F8B500",
-    'Kyoto Sanga FC':"#820064",'Gamba Osaka': "#00458D",'Cerezo Osaka': "#DB005B",'Vissel Kobe': '#A60129',
-    'Fagiano Okayama':"#A72041",'Sanfrecce Hiroshima':"#603D97",'Avispa Fukuoka':"#9EB5C7",
-    'Hokkaido Consadole Sapporo':"#125D75",'Vegalta Sendai':"#FFC20E",'AFC Blaublitz Akita':"#0D5790",'Montedio Yamagata':"#F7F4A6",'Iwaki SC':"#C01630",
-    'Mito Hollyhock':"#2E3192",'Omiya Ardija':"#EC6601",'JEF United Ichihara Chiba':"#FFDE00",'Ventforet Kofu':"#0F63A3",
-    'Kataller Toyama':"#25458F",'Jubilo Iwata':"#7294BA",'Fujieda MYFC':"#875884",'Renofa Yamaguchi':"#F26321",'Tokushima Vortis':"#11233F",'Ehime FC':"#ED9A4C",'FC Imabari':"#908E3C",
-    'Sagan Tosu':"#30B7D7",'V-Varen Nagasaki':"#013893",'Roasso Kumamoto':"#A92D27",'Oita Trinita':"#254398",
-    'Vanraure Hachinohe':"#13A63B",'Fukushima United FC':"#CF230C",'Tochigi SC':"#0170A4",'Tochigi City':"#001030",'ThespaKusatsu Gunma':"#08406F",'SC Sagamihara':"#408B52",
-    'AC Parceiro Nagano':"#E36A2A",'Matsumoto Yamaga FC':"#004B1D",'Ishikawa FC Zweigen Kanazawa':"#3B1216",'FC Azul Claro Numazu':"#13A7DE",'FC Gifu':"#126246",
-    'FC Osaka':"#90C9E2",'Nara Club':"#011D64",'Gainare Tottori':"#96C692",'Kamatamare Sanuki':"#669FB9",'Kochi United SC':"#B21E23",
-    'Giravanz Kitakyushu':"#E8BD00",'Tegevajaro Miyazaki FC':"#F6E066",'Kagoshima United FC':"#19315F",'FC Ryūkyū':"#AA131B",
-}
-
+# 変数リスト
 available_vars = [
     'Distance','Running Distance','HSR Distance','Sprint Count','HI Distance','HI Count',
     'Distance TIP','Running Distance TIP','HSR Distance TIP','HSR Count TIP',
@@ -36,84 +19,98 @@ available_vars = [
     'HSR Distance OTIP','HSR Count OTIP','Sprint Distance OTIP','Sprint Count OTIP'
 ]
 
-# --- 2. データの読み込みと集計ロジック ---
+# --- 2. 徹底的な「チーム1試合合計」の作成 ---
 
 @st.cache_data
-def get_league_data(league_key):
+def load_and_group_by_match(league_key):
     try:
-        # 生データをロード
         raw_df = pd.read_csv(f"data/{LEAGUE_FILE_MAP[league_key]}")
         
-        # 指示通り: 「まず1試合の選手が出した数値を合計する。＝チームの数値」
-        # これにより全38試合分（または消化試合分）のチーム合計行が生成されます
-        team_match_df = raw_df.groupby(['Team', 'Match ID'])[available_vars].sum().reset_index()
+        # Match IDだけでは不安なため、日付や相手チーム(があれば)も含めて「1試合」を特定する
+        # ここではTeamとMatch IDを基点にします
+        group_keys = ['Team', 'Match ID']
+        if 'Match Date' in raw_df.columns:
+            group_keys.append('Match Date')
+
+        # --- ステップ1: 1試合内の選手全員を合計して「チーム1試合の数値」を作る ---
+        # 38試合あるなら、ここで各チームちょうど38行のデータになります
+        team_match_totals = raw_df.groupby(group_keys)[available_vars].sum().reset_index()
         
-        return team_match_df
+        return team_match_totals
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        st.error(f"データ読み込みに失敗しました: {e}")
         return pd.DataFrame()
 
 # --- 3. メインUI ---
 
 st.sidebar.title("Physical Dashboard")
-selected_league = st.sidebar.selectbox('League Select', ['J1', 'J2', 'J3'])
+selected_league = st.sidebar.selectbox('リーグ選択', ['J1', 'J2', 'J3'])
 
-# 1試合合計ベースのデータを取得 (ここで各チーム約38行のデータになっている)
-df_match_totals = get_league_data(selected_league)
+# ここで「チームの1試合合計リスト（38個）」を取得
+df_match_list = load_and_group_by_match(selected_league)
 
-if not df_match_totals.empty:
-    st.title(f"🏆 {selected_league} Ranking")
+if not df_match_list.empty:
+    st.title(f"🏆 {selected_league} フィジカル分析")
     
     col1, col2 = st.columns(2)
     with col1:
-        method = st.selectbox('Aggregation', ['Max', 'Min', 'Average', 'Total'])
+        method = st.selectbox('集計方法 (38試合の中から抽出)', ['Max', 'Min', 'Average', 'Total'])
     with col2:
-        target_var = st.selectbox('Metric', available_vars)
+        target_var = st.selectbox('評価指標', available_vars)
 
-    # --- 4. MAX/MINの選出 ---
+    # --- 4. ランキング算出 ---
 
-    # Sprint等の0除外 (計測エラー試合の排除)
-    working_df = df_match_totals[df_match_totals[target_var] > 0].copy()
+    # 0の除外 (Sprint 0などの異常値試合を排除)
+    working_df = df_match_list[df_match_list[target_var] > 0].copy()
 
-    # 指示通り: 「38個出して、その中からMAX/MINを出す」
+    # --- ステップ2: 38試合のリストの中から1つの数値(Max/Min)を選ぶ ---
     if method == 'Max':
         final_stats = working_df.groupby('Team')[target_var].max().reset_index()
     elif method == 'Min':
         final_stats = working_df.groupby('Team')[target_var].min().reset_index()
     elif method == 'Average':
         final_stats = working_df.groupby('Team')[target_var].mean().reset_index()
-    else: # Total
+    else:
         final_stats = working_df.groupby('Team')[target_var].sum().reset_index()
 
-    # 表示単位の調整 (Distance系はkmに)
-    display_name = target_var
+    # Distanceの単位をkmへ
     if 'Distance' in target_var:
         final_stats[target_var] = final_stats[target_var] / 1000
-        display_name = f"{target_var} (km)"
 
-    # ソート設定
-    is_ascending = (method == 'Min')
-    final_stats = final_stats.sort_values(by=target_var, ascending=is_ascending)
+    # ソート
+    is_asc = (method == 'Min')
+    final_stats = final_stats.sort_values(by=target_var, ascending=is_asc)
 
-    # --- 5. グラフの描画 ---
-    
-    # カラーマップの生成
-    color_scale = alt.Scale(domain=list(TEAM_COLORS.keys()), range=list(TEAM_COLORS.values()))
+    # --- 5. グラフと検証用データの表示 ---
 
     chart = alt.Chart(final_stats).mark_bar().encode(
-        y=alt.Y('Team:N', sort='x' if is_ascending else '-x', title='Team'),
-        x=alt.X(f'{target_var}:Q', title=f'{method} of {display_name}'),
-        color=alt.Color('Team:N', scale=color_scale, legend=None),
-        tooltip=['Team', alt.Tooltip(target_var, format='.2f')]
-    ).properties(height=600, title=f"{selected_league} Team {method} Ranking")
+        y=alt.Y('Team:N', sort='x' if is_asc else '-x'),
+        x=alt.X(f'{target_var}:Q', title=f"{method} {target_var}"),
+        color=alt.Color('Team:N', legend=None),
+        tooltip=['Team', target_var]
+    ).properties(height=600)
 
     st.altair_chart(chart, use_container_width=True)
 
-    # 実際に38試合分あるかの確認用（デバッグ表示）
-    with st.expander("Show Calculation Logic Detail"):
-        st.write("1. Each row below represents the SUM of all players in a single match (Team Value).")
-        st.write(f"2. Your selected {method} is picked from these values for each team.")
-        st.dataframe(df_match_totals)
-
+    # --- 検証用表示 (ここを見れば計算が合っているか分かります) ---
+    st.markdown("---")
+    st.subheader("📊 数値の検証（計算プロセス）")
+    
+    test_team = st.selectbox("確認したいチームを選択", sorted(df_match_list['Team'].unique()))
+    
+    # そのチームの全試合(38試合)の合計値リストを表示
+    team_full_list = df_match_list[df_match_list['Team'] == test_team].sort_values('Match ID')
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.write(f"**{test_team} の全試合合計値リスト (38試合分)**")
+        st.write("この数値群の中から MAX や MIN が選ばれています。")
+        st.dataframe(team_full_list[['Match ID', target_var]])
+    
+    with col_b:
+        st.write(f"**抽出結果**")
+        current_val = final_stats[final_stats['Team'] == test_team][target_var].values[0]
+        st.metric(label=f"{test_team} の {method} 値", value=f"{current_val:.2f}")
+        
 else:
-    st.error("Data could not be loaded. Please check your CSV files.")
+    st.error("CSVデータが見つかりません。")
