@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-# --- 1. 定数・設定 ---
+# --- 1. 基本設定 ---
 st.set_page_config(layout="wide", page_title="J.League Physical Dashboard")
 
 LEAGUE_FILE_MAP = {
@@ -11,7 +11,7 @@ LEAGUE_FILE_MAP = {
     'J3': '2025_J3_physical_data.csv'
 }
 
-# 全チームのカラー定義（主要チームのみ抜粋、適宜追加してください）
+# チームカラー（分析時に色が固定されるよう設定）
 TEAM_COLORS = {
     'Kashima Antlers': '#B71940','Kashiwa Reysol':"#FFF000",'Urawa Red Diamonds': '#E6002D',
     'FC Tokyo': "#3E4C8D",'Tokyo Verdy':"#006931",'FC Machida Zelvia':"#0056A5",
@@ -36,104 +36,84 @@ available_vars = [
     'HSR Distance OTIP','HSR Count OTIP','Sprint Distance OTIP','Sprint Count OTIP'
 ]
 
-# --- 2. データ読み込みと「チーム合計化」のコアロジック ---
+# --- 2. データの読み込みと集計ロジック ---
 
 @st.cache_data
-def get_processed_team_data(league_key):
-    """
-    選手単位のデータを即座に捨て、Match IDを基点に『チーム1試合合計』データに変換する
-    """
+def get_league_data(league_key):
     try:
-        # 1. 生データの読み込み
+        # 生データをロード
         raw_df = pd.read_csv(f"data/{LEAGUE_FILE_MAP[league_key]}")
         
-        # 2. Match ID と Team でグルーピングして『合計』を算出
-        # ここを通ることで、データは「チーム名 / Match ID / 各項目の合計値」のみになる
-        # つまり「1行 ＝ そのチームの1試合の結果」という形に固定される
-        team_match_summary = raw_df.groupby(['Team', 'Match ID'])[available_vars].sum().reset_index()
+        # 指示通り: 「まず1試合の選手が出した数値を合計する。＝チームの数値」
+        # これにより全38試合分（または消化試合分）のチーム合計行が生成されます
+        team_match_df = raw_df.groupby(['Team', 'Match ID'])[available_vars].sum().reset_index()
         
-        # 3. リーグ情報を付与
-        team_match_summary['League'] = league_key
-        return team_match_summary
+        return team_match_df
     except Exception as e:
-        st.error(f"データのロードに失敗しました ({league_key}): {e}")
+        st.error(f"Error loading data: {e}")
         return pd.DataFrame()
 
-# --- 3. UI表示メインロジック ---
+# --- 3. メインUI ---
 
-# サイドバーメニュー
-st.sidebar.title("MENU")
+st.sidebar.title("Physical Dashboard")
 selected_league = st.sidebar.selectbox('League Select', ['J1', 'J2', 'J3'])
 
-# データの取得（ここで既に1試合合計データになっている）
-df_summary = get_processed_team_data(selected_league)
+# 1試合合計ベースのデータを取得 (ここで各チーム約38行のデータになっている)
+df_match_totals = get_league_data(selected_league)
 
-if not df_summary.empty:
-    st.title(f"🏆 {selected_league} Physical Analysis")
-    st.subheader('Analysis based on Team-Match Totals (Match ID used as anchor)')
+if not df_match_totals.empty:
+    st.title(f"🏆 {selected_league} Ranking")
     
-    # 指標と集計方法の選択
     col1, col2 = st.columns(2)
     with col1:
-        method = st.selectbox('Aggregation Method', ['Max', 'Min', 'Average', 'Total'])
+        method = st.selectbox('Aggregation', ['Max', 'Min', 'Average', 'Total'])
     with col2:
-        target_var = st.selectbox('Variable', available_vars)
+        target_var = st.selectbox('Metric', available_vars)
 
-    # --- 4. ランキングの計算 ---
+    # --- 4. MAX/MINの選出 ---
 
-    # Sprint等の0除外処理（0の試合は未計測・エラーとして除外）
-    # 既に1試合合計なので、合計が0の試合を無視する
-    working_df = df_summary[df_summary[target_var] > 0].copy()
+    # Sprint等の0除外 (計測エラー試合の排除)
+    working_df = df_match_totals[df_match_totals[target_var] > 0].copy()
 
-    if working_df.empty:
-        st.warning(f"No valid data found for {target_var} (All values are 0).")
-    else:
-        # 指定された手法でチームごとに最終集計
-        if method == 'Max':
-            final_stats = working_df.groupby('Team')[target_var].max().reset_index()
-        elif method == 'Min':
-            final_stats = working_df.groupby('Team')[target_var].min().reset_index()
-        elif method == 'Average':
-            final_stats = working_df.groupby('Team')[target_var].mean().reset_index()
-        else: # Total
-            final_stats = working_df.groupby('Team')[target_var].sum().reset_index()
+    # 指示通り: 「38個出して、その中からMAX/MINを出す」
+    if method == 'Max':
+        final_stats = working_df.groupby('Team')[target_var].max().reset_index()
+    elif method == 'Min':
+        final_stats = working_df.groupby('Team')[target_var].min().reset_index()
+    elif method == 'Average':
+        final_stats = working_df.groupby('Team')[target_var].mean().reset_index()
+    else: # Total
+        final_stats = working_df.groupby('Team')[target_var].sum().reset_index()
 
-        # Distance項目の単位調整 (m -> km)
-        plot_var = target_var
-        if 'Distance' in target_var:
-            final_stats[target_var] = final_stats[target_var] / 1000
-            plot_var = f"{target_var} (km)"
+    # 表示単位の調整 (Distance系はkmに)
+    display_name = target_var
+    if 'Distance' in target_var:
+        final_stats[target_var] = final_stats[target_var] / 1000
+        display_name = f"{target_var} (km)"
 
-        # ソート設定: Minなら小さい順(昇順)、それ以外は大きい順(降順)
-        is_ascending = (method == 'Min')
-        final_stats = final_stats.sort_values(by=target_var, ascending=is_ascending)
+    # ソート設定
+    is_ascending = (method == 'Min')
+    final_stats = final_stats.sort_values(by=target_var, ascending=is_ascending)
 
-        # --- 5. グラフ描画 (Altair) ---
-        
-        # チームカラーの適用（辞書にない場合はグレー）
-        color_scale = alt.Scale(
-            domain=list(TEAM_COLORS.keys()), 
-            range=list(TEAM_COLORS.values())
-        )
+    # --- 5. グラフの描画 ---
+    
+    # カラーマップの生成
+    color_scale = alt.Scale(domain=list(TEAM_COLORS.keys()), range=list(TEAM_COLORS.values()))
 
-        chart = alt.Chart(final_stats).mark_bar().encode(
-            y=alt.Y('Team:N', sort='x' if is_ascending else '-x', title='Team'),
-            x=alt.X(f'{target_var}:Q', title=f'{method} {plot_var}'),
-            color=alt.Color('Team:N', scale=color_scale, legend=None),
-            tooltip=['Team', alt.Tooltip(target_var, format='.2f')]
-        ).properties(
-            height=600,
-            title=f"{selected_league} {method} Ranking: {target_var}"
-        ).configure_axis(
-            labelFontSize=12,
-            titleFontSize=14
-        )
+    chart = alt.Chart(final_stats).mark_bar().encode(
+        y=alt.Y('Team:N', sort='x' if is_ascending else '-x', title='Team'),
+        x=alt.X(f'{target_var}:Q', title=f'{method} of {display_name}'),
+        color=alt.Color('Team:N', scale=color_scale, legend=None),
+        tooltip=['Team', alt.Tooltip(target_var, format='.2f')]
+    ).properties(height=600, title=f"{selected_league} Team {method} Ranking")
 
-        st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
-        # データプレビュー（確認用）
-        with st.expander("See Raw Aggregated Data"):
-            st.dataframe(final_stats)
+    # 実際に38試合分あるかの確認用（デバッグ表示）
+    with st.expander("Show Calculation Logic Detail"):
+        st.write("1. Each row below represents the SUM of all players in a single match (Team Value).")
+        st.write(f"2. Your selected {method} is picked from these values for each team.")
+        st.dataframe(df_match_totals)
 
 else:
-    st.error("No data available. Please check the CSV files in 'data/' folder.")
+    st.error("Data could not be loaded. Please check your CSV files.")
