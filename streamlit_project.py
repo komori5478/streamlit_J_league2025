@@ -14,7 +14,6 @@ import re
 st.set_page_config(layout="wide", page_title="J.League Physical Dashboard")
 
 # --- 1. 定数・カラー定義 ---
-# リーグごとの指定色（J2J3混合用も追加）
 LEAGUE_COLOR_MAP = {
     'J1': '#E6002D', 
     'J2': '#127A3A', 
@@ -23,7 +22,6 @@ LEAGUE_COLOR_MAP = {
 }
 
 TEAM_COLORS = {
-    # J1, J2, J3 のチームカラー定義
     'Kashima Antlers': '#B71940','Kashiwa Reysol':"#FFF000",'Urawa Red Diamonds': '#E6002D',
     'FC Tokyo': "#3E4C8D",'Tokyo Verdy':"#006931",'FC Machida Zelvia':"#0056A5",
     'Kawasaki Frontale': "#319FDA",'Yokohama F. Marinos': "#014099",'Yokohama FC':"#4BC1FE",'Shonan Bellmare':"#9EFF26",
@@ -57,24 +55,19 @@ def to_excel(df: pd.DataFrame):
     return output.getvalue()
 
 def get_available_data():
-    """dataフォルダ内のファイルから年度とリーグを抽出する。J2J3等の混合名にも対応"""
     path = "data/"
     data_map = {}
     if not os.path.exists(path):
         os.makedirs(path)
         return data_map
-    
     files = os.listdir(path)
-    # 4桁数字_J1orJ2J3など_任意の名前.csv
     pattern = re.compile(r"(\d{4})_(J[1-3]+)")
-    
     for f in files:
         if f.endswith(".csv"):
             match = pattern.search(f)
             if match:
                 year, league = match.groups()
-                if year not in data_map:
-                    data_map[year] = {}
+                if year not in data_map: data_map[year] = {}
                 data_map[year][league] = f
     return data_map
 
@@ -87,8 +80,14 @@ def get_data(year, league_key):
     if not file_name: return pd.DataFrame()
     try:
         df = pd.read_csv(f"data/{file_name}")
+        
+        # --- ★重要: 数値データのクレンジング処理 ---
+        for col in physical_vars:
+            if col in df.columns:
+                # 文字列だった場合にカンマを消して数値に変換、エラーはNaN（欠損値）にする
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+
         df['League'] = league_key
-        # 節(Matchday)の算出ロジック
         if 'Match ID' in df.columns:
             sort_cols = ['Team', 'Match Date'] if 'Match Date' in df.columns else ['Team', 'Match ID']
             unique_matches = df[['Team', 'Match ID', 'Match Date']].drop_duplicates() if 'Match Date' in df.columns else df[['Team', 'Match ID']].drop_duplicates()
@@ -98,22 +97,21 @@ def get_data(year, league_key):
             unique_matches['Matchday'] = unique_matches.groupby('Team').cumcount() + 1
             df = pd.merge(df, unique_matches[['Team', 'Match ID', 'Matchday']], on=['Team', 'Match ID'], how='left')
         return df
-    except:
+    except Exception as e:
+        st.error(f"データの読み込みに失敗しました: {e}")
         return pd.DataFrame()
 
 def apply_ranking_logic(df, method, target_var):
-    # 1. 1試合ごとのチーム合計値を算出
+    # すでに数値化されている前提
     match_totals = df.groupby(['Team', 'Match ID'])[physical_vars].sum().reset_index()
     working_df = match_totals[match_totals[target_var] > 0].copy()
     if working_df.empty: return pd.DataFrame(), ""
 
-    # 2. 指定された方法で集計
     if method == 'Total': res = working_df.groupby('Team')[target_var].sum().reset_index()
     elif method == 'Average': res = working_df.groupby('Team')[target_var].mean().reset_index()
     elif method == 'Max': res = working_df.groupby('Team')[target_var].max().reset_index()
     elif method == 'Min': res = working_df.groupby('Team')[target_var].min().reset_index()
     
-    # 3. 単位の統一 (Distanceを含む指標はkmへ)
     if 'Distance' in target_var:
         res[target_var] = res[target_var] / 1000
         unit = "km"
@@ -124,13 +122,16 @@ def apply_ranking_logic(df, method, target_var):
 
 def render_custom_ranking(df, league_name, team_colors):
     st.markdown("### 🏆 カスタムランキング作成")
-    team = st.selectbox('注目チームを選択', sorted(df['Team'].unique()), key=f"focal_{league_name}")
+    all_teams = sorted(df['Team'].unique())
+    team = st.selectbox('注目チームを選択', all_teams, key=f"focal_{league_name}")
     col1, col2 = st.columns(2)
     method = col1.selectbox('集計方法', RANKING_METHODS, key=f"meth_{league_name}")
     var = col2.selectbox('評価指標', physical_vars, key=f"var_{league_name}")
     
     res, unit = apply_ranking_logic(df, method, var)
-    if res.empty: return
+    if res.empty:
+        st.info("表示できるデータがありません。")
+        return
 
     is_asc = (method == 'Min')
     plot_df = res.sort_values(by=var, ascending=is_asc).reset_index(drop=True)
