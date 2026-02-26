@@ -14,10 +14,16 @@ import re
 st.set_page_config(layout="wide", page_title="J.League Physical Dashboard")
 
 # --- 1. 定数・カラー定義 ---
-LEAGUE_COLOR_MAP = {'J1': '#E6002D', 'J2': '#127A3A', 'J3': '#014099'}
+# リーグごとの指定色（J2J3混合用も追加）
+LEAGUE_COLOR_MAP = {
+    'J1': '#E6002D', 
+    'J2': '#127A3A', 
+    'J3': '#014099',
+    'J2J3': '#555555' 
+}
 
 TEAM_COLORS = {
-    # J1, J2, J3 の全チームカラー (既存の定義を保持)
+    # J1, J2, J3 のチームカラー定義
     'Kashima Antlers': '#B71940','Kashiwa Reysol':"#FFF000",'Urawa Red Diamonds': '#E6002D',
     'FC Tokyo': "#3E4C8D",'Tokyo Verdy':"#006931",'FC Machida Zelvia':"#0056A5",
     'Kawasaki Frontale': "#319FDA",'Yokohama F. Marinos': "#014099",'Yokohama FC':"#4BC1FE",'Shonan Bellmare':"#9EFF26",
@@ -44,19 +50,32 @@ RANKING_METHODS = ['Total', 'Average', 'Max', 'Min']
 
 # --- 2. ユーティリティ・データロード ---
 
+def to_excel(df: pd.DataFrame):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Ranking Data')
+    return output.getvalue()
+
 def get_available_data():
-    """dataフォルダ内のファイルから年度とリーグを自動抽出する"""
+    """dataフォルダ内のファイルから年度とリーグを抽出する。J2J3等の混合名にも対応"""
     path = "data/"
-    data_map = {} # { '2026': {'J1': 'filename', ...} }
-    if not os.path.exists(path): return data_map
+    data_map = {}
+    if not os.path.exists(path):
+        os.makedirs(path)
+        return data_map
+    
     files = os.listdir(path)
-    pattern = re.compile(r"(\d{4})_(J[1-3])_physical_data\.csv")
+    # 4桁数字_J1orJ2J3など_任意の名前.csv
+    pattern = re.compile(r"(\d{4})_(J[1-3]+)")
+    
     for f in files:
-        match = pattern.match(f)
-        if match:
-            year, league = match.groups()
-            if year not in data_map: data_map[year] = {}
-            data_map[year][league] = f
+        if f.endswith(".csv"):
+            match = pattern.search(f)
+            if match:
+                year, league = match.groups()
+                if year not in data_map:
+                    data_map[year] = {}
+                data_map[year][league] = f
     return data_map
 
 DATA_MAP = get_available_data()
@@ -69,7 +88,7 @@ def get_data(year, league_key):
     try:
         df = pd.read_csv(f"data/{file_name}")
         df['League'] = league_key
-        # 節(Matchday)の算出
+        # 節(Matchday)の算出ロジック
         if 'Match ID' in df.columns:
             sort_cols = ['Team', 'Match Date'] if 'Match Date' in df.columns else ['Team', 'Match ID']
             unique_matches = df[['Team', 'Match ID', 'Match Date']].drop_duplicates() if 'Match Date' in df.columns else df[['Team', 'Match ID']].drop_duplicates()
@@ -94,14 +113,14 @@ def apply_ranking_logic(df, method, target_var):
     elif method == 'Max': res = working_df.groupby('Team')[target_var].max().reset_index()
     elif method == 'Min': res = working_df.groupby('Team')[target_var].min().reset_index()
     
-    # 3. 単位の統一 (m -> km)
+    # 3. 単位の統一 (Distanceを含む指標はkmへ)
     if 'Distance' in target_var:
         res[target_var] = res[target_var] / 1000
         unit = "km"
     else: unit = "回"
     return res, unit
 
-# --- 3. 描画コンポーネント (以前のコードのロジックを維持) ---
+# --- 3. 描画コンポーネント ---
 
 def render_custom_ranking(df, league_name, team_colors):
     st.markdown("### 🏆 カスタムランキング作成")
@@ -115,7 +134,7 @@ def render_custom_ranking(df, league_name, team_colors):
 
     is_asc = (method == 'Min')
     plot_df = res.sort_values(by=var, ascending=is_asc).reset_index(drop=True)
-    plot_df = plot_df[::-1] # 反転して上位を上に
+    plot_df = plot_df[::-1] 
 
     sns.set(rc={'axes.facecolor':'#fbf9f4', 'figure.facecolor':'#fbf9f4'})
     fig, ax = plt.subplots(figsize=(7, 8), dpi=200)
@@ -151,14 +170,14 @@ def render_league_dashboard(df, league_name, team_colors):
                 tooltip=['Team', alt.Tooltip(v, format='.2f', title=f"{v} ({unit})")]
             ).properties(height=600)
             st.altair_chart(chart, use_container_width=True)
+            st.download_button(label=f"Excelダウンロード", data=to_excel(res), file_name=f"{league_name}_{m}_{v}.xlsx")
 
     with tabs[1]:
         render_custom_ranking(df, league_name, team_colors)
     with tabs[2]:
-        # トレンド分析 (1試合合計値の推移)
         all_teams = sorted(df['Team'].unique())
-        sel_team = st.selectbox('チーム', all_teams, key=f'tr_t_{league_name}')
-        sel_var = st.selectbox('項目', physical_vars, key=f'tr_v_{league_name}')
+        sel_team = st.selectbox('推移を見るチームを選択', all_teams, key=f'tr_t_{league_name}')
+        sel_var = st.selectbox('推移を見る指標を選択', physical_vars, key=f'tr_v_{league_name}')
         match_data = df[df['Team'] == sel_team].groupby(['Matchday', 'Match ID'])[sel_var].sum().reset_index()
         if 'Distance' in sel_var: match_data[sel_var] = match_data[sel_var] / 1000
         fig = px.line(match_data, x='Matchday', y=sel_var, markers=True, title=f"{sel_team} {sel_var} 推移")
@@ -178,9 +197,13 @@ with st.sidebar:
 
 if selected_league == 'HOME':
     st.title(f'🇯🇵 J.League Physical Dashboard ({selected_year})')
-    all_data = pd.concat([get_data(selected_year, lk) for lk in DATA_MAP[selected_year].keys()], ignore_index=True)
-    if not all_data.empty:
-        # 1試合平均のチーム合計値で比較
+    all_dfs = []
+    for lk in DATA_MAP[selected_year].keys():
+        d = get_data(selected_year, lk)
+        if not d.empty: all_dfs.append(d)
+    
+    if all_dfs:
+        all_data = pd.concat(all_dfs, ignore_index=True)
         team_summary = all_data.groupby(['Team', 'League', 'Match ID'])[physical_vars].sum().reset_index()
         team_avg = team_summary.groupby(['Team', 'League'])[physical_vars].mean().reset_index()
         for col in physical_vars:
@@ -190,7 +213,7 @@ if selected_league == 'HOME':
         x_v = c1.selectbox('X軸', physical_vars, index=0)
         y_v = c2.selectbox('Y軸', physical_vars, index=3)
         fig = px.scatter(team_avg, x=x_v, y=y_v, color='League', color_discrete_map=LEAGUE_COLOR_MAP, 
-                         hover_data=['Team'], title="全リーグ 1試合平均スタッツ比較", height=600)
+                         hover_data=['Team'], title="全リーグ 1試合平均比較", height=600)
         st.plotly_chart(fig, use_container_width=True)
 else:
     df_league = get_data(selected_year, selected_league)
