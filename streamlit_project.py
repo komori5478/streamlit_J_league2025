@@ -9,6 +9,7 @@ import seaborn as sns
 from io import BytesIO
 import os
 import re
+import datetime
 
 # --- 0. グローバル設定 ---
 st.set_page_config(layout="wide", page_title="J.League Physical Dashboard")
@@ -74,17 +75,18 @@ def get_available_data():
 DATA_MAP = get_available_data()
 AVAILABLE_YEARS = sorted(DATA_MAP.keys(), reverse=True)
 
-@st.cache_data(ttl=60*15)
+# ★修正点1: ttlを10秒に短縮し、開発中やデータ更新時にすぐ反映されるように変更
+@st.cache_data(ttl=10)
 def get_data(year, league_key):
     file_name = DATA_MAP.get(year, {}).get(league_key)
     if not file_name: return pd.DataFrame()
     try:
-        df = pd.read_csv(f"data/{file_name}")
+        file_path = f"data/{file_name}"
+        df = pd.read_csv(file_path)
         
-        # --- ★重要: 数値データのクレンジング処理 ---
+        # --- 数値データのクレンジング処理 ---
         for col in physical_vars:
             if col in df.columns:
-                # 文字列だった場合にカンマを消して数値に変換、エラーはNaN（欠損値）にする
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
         df['League'] = league_key
@@ -102,7 +104,6 @@ def get_data(year, league_key):
         return pd.DataFrame()
 
 def apply_ranking_logic(df, method, target_var):
-    # すでに数値化されている前提
     match_totals = df.groupby(['Team', 'Match ID'])[physical_vars].sum().reset_index()
     working_df = match_totals[match_totals[target_var] > 0].copy()
     if working_df.empty: return pd.DataFrame(), ""
@@ -192,6 +193,20 @@ with st.sidebar:
         selected_year = st.selectbox('対象シーズン', AVAILABLE_YEARS)
         available_leagues = ['HOME'] + sorted(DATA_MAP[selected_year].keys())
         selected_league = st.selectbox('リーグ選択', available_leagues)
+        
+        # ★修正点2: 現在のファイル更新状況とキャッシュクリアボタンを追加
+        st.divider()
+        if selected_league != 'HOME':
+            f_name = DATA_MAP[selected_year].get(selected_league)
+            if f_name:
+                mtime = os.path.getmtime(f"data/{f_name}")
+                dt_m = datetime.datetime.fromtimestamp(mtime)
+                st.info(f"📁 ファイル: {f_name}\n\n🕒 最終更新: {dt_m.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if st.button("🔄 キャッシュを手動クリア"):
+            st.cache_data.clear()
+            st.rerun()
+
     else:
         st.error("dataフォルダにCSVが見つかりません。")
         st.stop()
