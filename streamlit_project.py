@@ -45,7 +45,7 @@ physical_vars = [
     'Sprint Distance TIP','Sprint Count TIP','Distance OTIP','Running Distance OTIP',
     'HSR Distance OTIP','HSR Count OTIP','Sprint Distance OTIP','Sprint Count OTIP'
 ]
-RANKING_METHODS = ['Total', 'Average', 'Max', 'Min']
+RANKING_METHODS = ['Average', 'Total', 'Max', 'Min'] # Averageを先頭に
 
 # --- 2. ユーティリティ・データロード ---
 
@@ -75,16 +75,12 @@ def get_available_data():
 DATA_MAP = get_available_data()
 AVAILABLE_YEARS = sorted(DATA_MAP.keys(), reverse=True)
 
-# ★修正点1: ttlを10秒に短縮し、開発中やデータ更新時にすぐ反映されるように変更
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=10) # データ更新反映のため短めに設定
 def get_data(year, league_key):
     file_name = DATA_MAP.get(year, {}).get(league_key)
     if not file_name: return pd.DataFrame()
     try:
-        file_path = f"data/{file_name}"
-        df = pd.read_csv(file_path)
-        
-        # --- 数値データのクレンジング処理 ---
+        df = pd.read_csv(f"data/{file_name}")
         for col in physical_vars:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -104,15 +100,24 @@ def get_data(year, league_key):
         return pd.DataFrame()
 
 def apply_ranking_logic(df, method, target_var):
-    match_totals = df.groupby(['Team', 'Match ID'])[physical_vars].sum().reset_index()
+    # 試合ごとの合計を算出
+    match_totals = df.groupby(['Team', 'Match ID'])[physical_vars].sum(numeric_only=True).reset_index()
+    # 該当指標が0より大きい試合のみを有効とする
     working_df = match_totals[match_totals[target_var] > 0].copy()
     if working_df.empty: return pd.DataFrame(), ""
+
+    # 試合数をカウント（パターンA対策）
+    match_counts = working_df.groupby('Team')['Match ID'].count().reset_index()
+    match_counts.columns = ['Team', 'Played Games']
 
     if method == 'Total': res = working_df.groupby('Team')[target_var].sum().reset_index()
     elif method == 'Average': res = working_df.groupby('Team')[target_var].mean().reset_index()
     elif method == 'Max': res = working_df.groupby('Team')[target_var].max().reset_index()
     elif method == 'Min': res = working_df.groupby('Team')[target_var].min().reset_index()
     
+    # 試合数を結合
+    res = pd.merge(res, match_counts, on='Team')
+
     if 'Distance' in target_var:
         res[target_var] = res[target_var] / 1000
         unit = "km"
@@ -141,15 +146,16 @@ def render_custom_ranking(df, league_name, team_colors):
     sns.set(rc={'axes.facecolor':'#fbf9f4', 'figure.facecolor':'#fbf9f4'})
     fig, ax = plt.subplots(figsize=(7, 8), dpi=200)
     nrows = plot_df.shape[0]
-    ax.set_xlim(0, 3.5); ax.set_ylim(0, nrows + 1.5)
+    ax.set_xlim(0, 4.0); ax.set_ylim(0, nrows + 1.5)
 
     for i in range(nrows):
         t_name = plot_df['Team'].iloc[i]
         val = plot_df[var].iloc[i]
+        games = plot_df['Played Games'].iloc[i]
         is_f = (t_name == team)
         c = team_colors.get(t_name, '#4A2E19') if is_f else '#4A2E19'
         ax.annotate(f"{nrows-i}  {t_name}", xy=(0.1, i + .5), va='center', color=c, weight='bold' if is_f else 'regular')
-        ax.annotate(f"{round(val, 2)} {unit}", xy=(2.5, i + .5), va='center', color=c, weight='bold' if is_f else 'regular')
+        ax.annotate(f"{round(val, 2)} {unit} ({int(games)}試合)", xy=(2.5, i + .5), va='center', color=c, weight='bold' if is_f else 'regular', fontsize=9)
     
     ax.set_axis_off()
     st.pyplot(fig)
@@ -169,7 +175,11 @@ def render_league_dashboard(df, league_name, team_colors):
                 y=alt.Y('Team:N', sort='x' if is_asc else '-x', title='チーム'),
                 x=alt.X(v, title=f"{m} {v} ({unit})"),
                 color=alt.Color('Team:N', scale=alt.Scale(domain=list(team_colors.keys()), range=list(team_colors.values())), legend=None),
-                tooltip=['Team', alt.Tooltip(v, format='.2f', title=f"{v} ({unit})")]
+                tooltip=[
+                    alt.Tooltip('Team', title='チーム'),
+                    alt.Tooltip('Played Games', title='有効試合数'),
+                    alt.Tooltip(v, format='.2f', title=f"{v} ({unit})")
+                ]
             ).properties(height=600)
             st.altair_chart(chart, use_container_width=True)
             st.download_button(label=f"Excelダウンロード", data=to_excel(res), file_name=f"{league_name}_{m}_{v}.xlsx")
@@ -180,7 +190,7 @@ def render_league_dashboard(df, league_name, team_colors):
         all_teams = sorted(df['Team'].unique())
         sel_team = st.selectbox('推移を見るチームを選択', all_teams, key=f'tr_t_{league_name}')
         sel_var = st.selectbox('推移を見る指標を選択', physical_vars, key=f'tr_v_{league_name}')
-        match_data = df[df['Team'] == sel_team].groupby(['Matchday', 'Match ID'])[sel_var].sum().reset_index()
+        match_data = df[df['Team'] == sel_team].groupby(['Matchday', 'Match ID'])[sel_var].sum(numeric_only=True).reset_index()
         if 'Distance' in sel_var: match_data[sel_var] = match_data[sel_var] / 1000
         fig = px.line(match_data, x='Matchday', y=sel_var, markers=True, title=f"{sel_team} {sel_var} 推移")
         st.plotly_chart(fig, use_container_width=True)
@@ -194,19 +204,16 @@ with st.sidebar:
         available_leagues = ['HOME'] + sorted(DATA_MAP[selected_year].keys())
         selected_league = st.selectbox('リーグ選択', available_leagues)
         
-        # ★修正点2: 現在のファイル更新状況とキャッシュクリアボタンを追加
         st.divider()
         if selected_league != 'HOME':
             f_name = DATA_MAP[selected_year].get(selected_league)
             if f_name:
                 mtime = os.path.getmtime(f"data/{f_name}")
-                dt_m = datetime.datetime.fromtimestamp(mtime)
-                st.info(f"📁 ファイル: {f_name}\n\n🕒 最終更新: {dt_m.strftime('%Y-%m-%d %H:%M:%S')}")
+                st.info(f"🕒 最終更新: {datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}")
         
-        if st.button("🔄 キャッシュを手動クリア"):
+        if st.button("🔄 キャッシュクリア"):
             st.cache_data.clear()
             st.rerun()
-
     else:
         st.error("dataフォルダにCSVが見つかりません。")
         st.stop()
@@ -220,7 +227,8 @@ if selected_league == 'HOME':
     
     if all_dfs:
         all_data = pd.concat(all_dfs, ignore_index=True)
-        team_summary = all_data.groupby(['Team', 'League', 'Match ID'])[physical_vars].sum().reset_index()
+        team_summary = all_data.groupby(['Team', 'League', 'Match ID'])[physical_vars].sum(numeric_only=True).reset_index()
+        # 1試合平均を算出
         team_avg = team_summary.groupby(['Team', 'League'])[physical_vars].mean().reset_index()
         for col in physical_vars:
             if 'Distance' in col: team_avg[col] = team_avg[col] / 1000
@@ -229,7 +237,7 @@ if selected_league == 'HOME':
         x_v = c1.selectbox('X軸', physical_vars, index=0)
         y_v = c2.selectbox('Y軸', physical_vars, index=3)
         fig = px.scatter(team_avg, x=x_v, y=y_v, color='League', color_discrete_map=LEAGUE_COLOR_MAP, 
-                         hover_data=['Team'], title="全リーグ 1試合平均比較", height=600)
+                         hover_data=['Team'], title="全リーグ 1試合平均比較 (公平比較)", height=600)
         st.plotly_chart(fig, use_container_width=True)
 else:
     df_league = get_data(selected_year, selected_league)
